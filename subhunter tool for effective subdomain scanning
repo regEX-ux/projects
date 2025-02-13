@@ -1,0 +1,108 @@
+import requests
+import json
+import dns.resolver
+import concurrent.futures
+def fetch_subdomains_crtsh(domain):
+    url = f"https://crt.sh/?q=%25.{domain}&output=json"
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            try:
+                data = response.json()
+                subdomains = set()
+                for entry in data:
+                    name_value = entry.get("name_value")
+                    if name_value:
+                        for sub in name_value.split("\n"):
+                            subdomains.add(sub.strip())
+                return list(subdomains)
+            except json.JSONDecodeError:
+                return []
+    except requests.RequestException:
+        return []
+    return []
+def fetch_subdomains_threatcrowd(domain):
+    url = f"https://www.threatcrowd.org/searchApi/v2/domain/report/?domain={domain}"
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        return data.get("subdomains", [])
+    except requests.RequestException:
+        return []
+def fetch_subdomains_alienvault(domain):
+    url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
+    try:
+        response = requests.get(url, timeout=10)
+        data = response.json()
+        subdomains = set()
+        for record in data.get("passive_dns", []):
+            hostname = record.get("hostname")
+            if hostname and domain in hostname:
+                subdomains.add(hostname)
+        return list(subdomains)
+    except requests.RequestException:
+        return []
+SECURITYTRAILS_API_KEY = "YOUR_API_KEY_HERE"
+def fetch_subdomains_securitytrails(domain):
+    url = f"https://api.securitytrails.com/v1/domain/{domain}/subdomains"
+    headers = {"APIKEY": SECURITYTRAILS_API_KEY}
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        subdomains = data.get("subdomains", [])
+        return [f"{sub}.{domain}" for sub in subdomains]
+    except requests.RequestException:
+        return []
+def get_subdomains(domain):
+    print("[🔍] Fetching subdomains from multiple sources...")
+    sources = [
+        fetch_subdomains_crtsh,
+        fetch_subdomains_threatcrowd,
+        fetch_subdomains_alienvault,
+        fetch_subdomains_securitytrails
+    ]
+    subdomains = set()
+    for source in sources:
+        try:
+            subdomains.update(source(domain))
+        except Exception as e:
+            print(f"[❌] Error fetching from {source.__name__}: {e}")
+
+    return list(subdomains)
+def resolve_dns(subdomain):
+    try:
+        dns.resolver.resolve(subdomain, "A")
+        return subdomain
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.LifetimeTimeout):
+        return None
+def check_http(subdomain):
+    urls = [f"http://{subdomain}", f"https://{subdomain}"]
+    for url in urls:
+        try:
+            response = requests.get(url, timeout=5)
+            if response.status_code in [200, 301, 302, 403]:
+                return url
+        except requests.RequestException:
+            pass
+    return None
+def main():
+    domain = input("Enter target domain: ").strip()
+    subdomains = get_subdomains(domain)
+    if not subdomains:
+        print("[❌] No subdomains found.")
+        return
+    print(f"[✅] Found {len(subdomains)} subdomains. Performing DNS resolution...\n")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        resolved_subdomains = list(filter(None, executor.map(resolve_dns, subdomains)))
+    print(f"[✅] {len(resolved_subdomains)} subdomains resolved. Checking for live ones...\n")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        live_subdomains = list(filter(None, executor.map(check_http, resolved_subdomains)))
+    with open("found_subdomains.txt", "w") as f:
+        for sub in live_subdomains:
+            f.write(sub + "\n")
+    print(f"\n✅ Scan completed! {len(live_subdomains)} live subdomains found.")
+    print("🔹 Results saved in 'found_subdomains.txt'")
+if __name__ == "__main__":
+    main()
