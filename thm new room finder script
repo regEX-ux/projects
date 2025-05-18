@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# --- CONFIG ---
+ENCODED_SESSION_COOKIE="your session here"
+
+# --- Dependencies Check ---
+if ! command -v jq &> /dev/null; then
+    echo "Error: jq is required. Install it with:"
+    echo "  sudo apt install jq"
+    exit 1
+fi
+
+# --- URL Decoder ---
+decode_url() {
+    printf '%b' "${1//%/\\x}"
+}
+
+SESSION_COOKIE=$(decode_url "$ENCODED_SESSION_COOKIE")
+
+echo "🔄 Fetching your TryHackMe stats..."
+
+# Fetch your profile (needs your session cookie)
+PROFILE=$(curl -s --fail-with-body "https://tryhackme.com/api/v2/users/self" -H "Cookie: connect.sid=$SESSION_COOKIE")
+
+# Parse streak or fallback to N/A
+STREAK=$(echo "$PROFILE" | jq -r '.data.user.streak.streak // .data.userCurrentStreak // "N/A"')
+
+# Fetch newest rooms list
+NEW_ROOMS_JSON=$(curl -s "https://tryhackme.com/api/new-rooms")
+
+echo -e "\n=== YOUR STATS ==="
+printf "%-10s: %s days\n" "Streak" "$STREAK"
+
+echo -e "\n=== NEWEST ROOMS (last 5)"
+echo "$NEW_ROOMS_JSON" | jq -r '.[0:5][] | "• \(.title): \(.type)"'
